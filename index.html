@@ -621,6 +621,13 @@
     <div class="admin-header">
       <h1>⚙️ Admin Panel</h1>
       <p>Upload quizzes from Excel files. Users will see them immediately.</p>
+      <div style="display:flex;gap:10px;margin-top:1rem;flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="exportDB()" style="padding:9px 20px;font-size:0.85rem;">📥 Export db.json</button>
+        <label style="position:relative;cursor:pointer;">
+          <input type="file" accept=".json" onchange="importDB(this)" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;">
+          <span class="btn btn-outline" style="display:inline-block;padding:9px 20px;font-size:0.85rem;">📤 Import db.json</span>
+        </label>
+      </div>
     </div>
 
     <div class="upload-zone" id="upload-zone">
@@ -696,14 +703,103 @@
 
 <script>
 const ICONS = ['🧠','📖','🔬','🌍','🧮','📐','🎯','💡','🏆','📝','🌱','⚗️'];
-let quizzes = JSON.parse(localStorage.getItem('quizhub_quizzes') || '[]');
+let quizzes = [];
 let currentQuiz = null;
 let currentQ = 0;
 let answers = [];
 let selectedAnswer = null;
 let answered = false;
 
-function showPage(page) {
+const DB_STORAGE_KEY = 'quizhub_db';
+
+// DB: the local server writes db.json. localStorage is a fallback if index.html is opened directly.
+async function loadDB() {
+  try {
+    const response = await fetch('/api/db', { cache: 'no-store' });
+    if (response.ok) {
+      const db = await response.json();
+      quizzes = Array.isArray(db.quizzes) ? db.quizzes : [];
+      return;
+    }
+  } catch(e) {}
+
+  try {
+    const raw = localStorage.getItem(DB_STORAGE_KEY);
+    const db = raw ? JSON.parse(raw) : null;
+    quizzes = db && Array.isArray(db.quizzes) ? db.quizzes : [];
+  } catch(e) {
+    quizzes = [];
+  }
+}
+
+async function saveDB() {
+  const db = {
+    version: 1,
+    updated: new Date().toISOString(),
+    quizzes
+  };
+  try {
+    const response = await fetch('/api/db', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(db)
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return true;
+  } catch(e) {
+    try {
+      localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(db));
+      console.warn('Saved to localStorage fallback. Run server.js to write db.json.', e);
+      return false;
+    } catch(err) {
+      console.error('DB save failed:', err);
+      return false;
+    }
+  }
+}
+
+// ── Export db.json ──
+function exportDB() {
+  const db = { version: 1, updated: new Date().toISOString(), quizzes };
+  const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'db.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  showToast('📥 db.json downloaded', 'success');
+}
+
+// ── Import db.json ──
+function importDB(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    try {
+      const db = JSON.parse(e.target.result);
+      if (!db.quizzes || !Array.isArray(db.quizzes)) throw new Error('Invalid db.json format');
+      quizzes = db.quizzes;
+      const savedToFile = await saveDB();
+      renderAdmin();
+      renderHome();
+      showToast(savedToFile
+        ? `✅ Imported ${quizzes.length} quiz(zes) into db.json`
+        : `✅ Imported ${quizzes.length} quiz(zes). Start server.js to write db.json`,
+        'success');
+    } catch(err) {
+      showToast('❌ Import failed: ' + err.message, 'error');
+    }
+    input.value = '';
+  };
+  reader.readAsText(file);
+}
+
+// Boot
+loadDB().then(() => renderHome());
+
+async function showPage(page) {
+  await loadDB();
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
   document.getElementById('page-' + page).classList.add('active');
@@ -712,10 +808,6 @@ function showPage(page) {
   else tabs[1].classList.add('active');
   if (page === 'home') renderHome();
   if (page === 'admin') renderAdmin();
-}
-
-function saveQuizzes() {
-  localStorage.setItem('quizhub_quizzes', JSON.stringify(quizzes));
 }
 
 function renderHome() {
@@ -864,7 +956,7 @@ function handleFile(input) {
   const file = input.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     try {
       const wb = XLSX.read(e.target.result, { type: 'binary' });
       let added = 0;
@@ -901,9 +993,12 @@ function handleFile(input) {
         }
       });
       if (added > 0) {
-        saveQuizzes();
+        const savedToFile = await saveDB();
         renderAdmin();
-        showToast(`✅ Loaded ${added} quiz(zes)`, 'success');
+        showToast(savedToFile
+          ? `✅ Loaded ${added} quiz(zes) into db.json`
+          : `✅ Loaded ${added} quiz(zes). Start server.js to write db.json`,
+          'success');
       } else {
         showToast('⚠️ No questions found. Please check the file format.', 'error');
       }
@@ -915,12 +1010,12 @@ function handleFile(input) {
   reader.readAsBinaryString(file);
 }
 
-function deleteQuiz(i) {
+async function deleteQuiz(i) {
   if (!confirm(`Delete quiz "${quizzes[i].name}"?`)) return;
   quizzes.splice(i, 1);
-  saveQuizzes();
+  const savedToFile = await saveDB();
   renderAdmin();
-  showToast('🗑 Quiz deleted', 'success');
+  showToast(savedToFile ? '🗑 Quiz deleted from db.json' : '🗑 Quiz deleted locally', 'success');
 }
 
 function renderAdmin() {
@@ -970,7 +1065,6 @@ zone.addEventListener('drop', e => {
   }
 });
 
-renderHome();
 </script>
 </body>
 </html>
