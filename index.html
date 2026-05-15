@@ -952,12 +952,27 @@ function showResult() {
   `;
 }
 
+function createUniqueQuizName(baseName) {
+  const cleanName = String(baseName || 'Quiz').trim() || 'Quiz';
+  const names = new Set(quizzes.map(q => String(q.name).toLowerCase()));
+  if (!names.has(cleanName.toLowerCase())) return cleanName;
+
+  let counter = 2;
+  let nextName = `${cleanName} (${counter})`;
+  while (names.has(nextName.toLowerCase())) {
+    counter++;
+    nextName = `${cleanName} (${counter})`;
+  }
+  return nextName;
+}
+
 function handleFile(input) {
   const file = input.files[0];
   if (!file) return;
   const reader = new FileReader();
   reader.onload = async (e) => {
     try {
+      await loadDB();
       const wb = XLSX.read(e.target.result, { type: 'binary' });
       let added = 0;
       wb.SheetNames.forEach(sheetName => {
@@ -985,10 +1000,12 @@ function handleFile(input) {
           });
         }
         if (questions.length > 0) {
-          const exists = quizzes.findIndex(q => q.name === sheetName);
-          const quiz = { name: sheetName, questions, date: new Date().toLocaleDateString('en-US') };
-          if (exists >= 0) quizzes[exists] = quiz;
-          else quizzes.push(quiz);
+          const quiz = {
+            name: createUniqueQuizName(sheetName),
+            questions,
+            date: new Date().toLocaleDateString('en-US')
+          };
+          quizzes.push(quiz);
           added++;
         }
       });
